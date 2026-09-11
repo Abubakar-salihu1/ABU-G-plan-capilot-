@@ -1,1 +1,1 @@
-{"name":"abu-gplan-ai-copilot-server","private":true,"type":"module","scripts":{"dev":"node --watch src/index.js","start":"node src/index.js"},"dependencies":{"cors":"^2.8.5","dotenv":"^16.4.5","express":"^4.21.0"}}
+{"name":"abu-gplan-ai-copilot-server","private":true,"type":"module","scripts":{"dev":"node --watch src/index.js","start":"node src/index.js"},"dependencies":{"cors":"^2.8.5","dotenv":"^16.4.5","express":"^4.21.0","mammoth":"^1.12.2","multer":"^2.3.0","pdf-parse":"^2.4.5"}}
