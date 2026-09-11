@@ -3,8 +3,11 @@ import cors from "cors";
 import dotenv from "dotenv";
 import crypto from "crypto";
 import multer from "multer";
-import pdfParse from "pdf-parse";
+import { createRequire } from "module";
 import mammoth from "mammoth";
+
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
 
 dotenv.config();
 const app = express();
