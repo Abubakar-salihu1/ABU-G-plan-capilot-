@@ -188,3 +188,15 @@
 .composer button.composerIcon.sendBtn:not(:disabled):hover{
   background:#e5e5e5;
 }
+
+/* --- Prevent composer pill from clipping wrapped text --- */
+.composer{
+  align-items:flex-end;
+  min-height:52px;
+}
+.composer textarea{
+  overflow-y:auto;
+  white-space:pre-wrap;
+  padding-top:12px;
+  padding-bottom:12px;
+}

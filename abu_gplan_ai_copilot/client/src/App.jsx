@@ -123,7 +123,7 @@ export default function App(){
     <form className="composer" onSubmit={sendMessage}>
      <input ref={fileInputRef} type="file" multiple accept=".jpg,.jpeg,.png,.pdf,.txt,.docx" style={{display:"none"}} onChange={onFilesSelected}/>
      <button type="button" className="composerIcon plus" onClick={openFilePicker}><Plus size={20}/></button>
-     <textarea value={input} rows="1" placeholder="Message Abu Gplan AI Copilot..." onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(e)}}}/>
+     <textarea value={input} rows="1" placeholder="Message Abu Gplan AI..." onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMessage(e)}}}/>
      <button type="button" className={`composerIcon mic ${listening?"listening":""}`} onClick={toggleMic}><Mic size={19}/></button>
      <button className="composerIcon sendBtn" disabled={(!input.trim()&&attachments.length===0)||loading}><Send size={18}/></button>
     </form>
