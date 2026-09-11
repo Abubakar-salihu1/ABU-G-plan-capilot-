@@ -158,3 +158,33 @@
 .attachmentRemove:hover{
   opacity:1;
 }
+
+/* --- Specificity fix: override legacy .composer button rule --- */
+.composer button.composerIcon{
+  width:36px;
+  height:36px;
+  border-radius:50%;
+  background:transparent;
+  color:inherit;
+  border:none;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.composer button.composerIcon:hover{
+  background:rgba(255,255,255,0.1);
+}
+.composer button.composerIcon.mic.listening{
+  background:#ef4444;
+  color:#fff;
+}
+.composer button.composerIcon.sendBtn{
+  background:#fff;
+  color:#000;
+}
+.composer button.composerIcon.sendBtn:disabled{
+  opacity:0.35;
+}
+.composer button.composerIcon.sendBtn:not(:disabled):hover{
+  background:#e5e5e5;
+}
