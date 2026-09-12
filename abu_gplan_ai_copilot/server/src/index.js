@@ -15,20 +15,22 @@ const pdfParse = require("pdf-parse");
 dotenv.config();
 const app = express();
 const port = process.env.PORT || 5000;
-const conversations = new Map();
 app.use(cors({origin: process.env.CLIENT_ORIGIN || "*"}));
 app.use(express.json({limit:"2mb"}));
 
 const upload = multer({storage: multer.memoryStorage(), limits:{fileSize:10*1024*1024, files:5}});
 
-/* ---------- MongoDB (user accounts) ---------- */
+/* ---------- MongoDB (users + conversations) ---------- */
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 let usersCollection;
+let conversationsCollection;
 async function connectDB(){
   await mongoClient.connect();
   const db = mongoClient.db();
   usersCollection = db.collection("users");
+  conversationsCollection = db.collection("conversations");
   await usersCollection.createIndex({email:1},{unique:true});
+  await conversationsCollection.createIndex({userId:1, updatedAt:-1});
   console.log("Connected to MongoDB");
 }
 connectDB().catch(err=>console.error("MongoDB connection error:", err.message));
@@ -95,24 +97,52 @@ app.get("/api/auth/me", authMiddleware, (req,res)=>{
 
 app.get("/api/health", (_req,res)=>res.json({ok:true,name:"Abu Gplan AI Copilot",time:new Date().toISOString()}));
 
-/* ---------- Conversations (now user-scoped) ---------- */
-app.get("/api/conversations", authMiddleware, (req,res)=>{
-  res.json([...conversations.values()].filter(c=>c.userId===req.user.id).map(({id,title,updatedAt})=>({id,title,updatedAt})));
+/* ---------- Conversations (persisted in MongoDB, scoped per user) ---------- */
+app.get("/api/conversations", authMiddleware, async(req,res)=>{
+  try{
+    const list = await conversationsCollection
+      .find({userId:req.user.id})
+      .project({title:1,updatedAt:1})
+      .sort({updatedAt:-1})
+      .toArray();
+    res.json(list.map(c=>({id:c._id,title:c.title,updatedAt:c.updatedAt})));
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:"Failed to load conversations."});
+  }
 });
-app.get("/api/conversations/:id", authMiddleware, (req,res)=>{
-  const c=conversations.get(req.params.id);
-  if(!c || c.userId!==req.user.id) return res.status(404).json({error:"Conversation not found"});
-  res.json(c);
+
+app.get("/api/conversations/:id", authMiddleware, async(req,res)=>{
+  try{
+    const c = await conversationsCollection.findOne({_id:req.params.id, userId:req.user.id});
+    if(!c) return res.status(404).json({error:"Conversation not found"});
+    res.json({id:c._id, title:c.title, updatedAt:c.updatedAt, messages:c.messages||[]});
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:"Failed to load conversation."});
+  }
 });
-app.post("/api/conversations", authMiddleware, (req,res)=>{
-  const id=crypto.randomUUID();
-  const c={id,userId:req.user.id,title:String(req.body?.title||"New conversation").slice(0,100),updatedAt:Date.now(),messages:[]};
-  conversations.set(id,c); res.status(201).json(c);
+
+app.post("/api/conversations", authMiddleware, async(req,res)=>{
+  try{
+    const id=crypto.randomUUID();
+    const c={_id:id,userId:req.user.id,title:String(req.body?.title||"New conversation").slice(0,100),updatedAt:Date.now(),messages:[]};
+    await conversationsCollection.insertOne(c);
+    res.status(201).json({id:c._id,title:c.title,updatedAt:c.updatedAt,messages:c.messages});
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:"Failed to create conversation."});
+  }
 });
-app.delete("/api/conversations/:id", authMiddleware, (req,res)=>{
-  const c=conversations.get(req.params.id);
-  if(c && c.userId===req.user.id) conversations.delete(req.params.id);
-  res.status(204).end();
+
+app.delete("/api/conversations/:id", authMiddleware, async(req,res)=>{
+  try{
+    await conversationsCollection.deleteOne({_id:req.params.id, userId:req.user.id});
+    res.status(204).end();
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:"Failed to delete conversation."});
+  }
 });
 
 async function extractFileContent(file){
@@ -160,10 +190,10 @@ app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>
     const files=req.files||[];
     if(!message && files.length===0) return res.status(400).json({error:"Message is required."});
 
-    let c=conversations.get(req.body?.conversationId);
-    if(!c || c.userId!==req.user.id){
-      c={id:req.body?.conversationId||crypto.randomUUID(),userId:req.user.id,title:(message||files[0]?.originalname||"New conversation").slice(0,60),updatedAt:Date.now(),messages:[]};
-      conversations.set(c.id,c);
+    const convId = req.body?.conversationId || crypto.randomUUID();
+    let c = await conversationsCollection.findOne({_id:convId, userId:req.user.id});
+    if(!c){
+      c = {_id:convId, userId:req.user.id, title:(message||files[0]?.originalname||"New conversation").slice(0,60), updatedAt:Date.now(), messages:[]};
     }
 
     const extracted = await Promise.all(files.map(extractFileContent));
@@ -189,8 +219,16 @@ app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>
     }
 
     const answer=await callAI(apiMessages, model);
-    c.messages.push({role:"assistant",content:answer}); c.updatedAt=Date.now();
-    res.json({conversationId:c.id,answer});
+    c.messages.push({role:"assistant",content:answer});
+    c.updatedAt=Date.now();
+
+    await conversationsCollection.updateOne(
+      {_id:c._id},
+      {$set:{userId:c.userId, title:c.title, updatedAt:c.updatedAt, messages:c.messages}},
+      {upsert:true}
+    );
+
+    res.json({conversationId:c._id,answer});
   }catch(e){console.error(e);res.status(500).json({error:e.message||"Server error"});}
 });
 app.listen(port,()=>console.log(`Abu Gplan AI Copilot backend: http://localhost:${port}`));
