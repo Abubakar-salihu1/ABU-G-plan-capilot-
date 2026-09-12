@@ -1,5 +1,5 @@
 import React,{useEffect,useState,useRef} from "react";
-import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown} from "lucide-react";
+import {Bot,Menu,Plus,Send,Sparkles,Trash2,User,X,Code2,Lightbulb,FileText,Brain,Mic,ChevronDown,LogOut} from "lucide-react";
 const API=import.meta.env.VITE_API_URL||"http://localhost:5000/api";
 
 const MODELS=[
@@ -8,7 +8,53 @@ const MODELS=[
  {id:"qwen/qwen3.6-27b",label:"Vision"}
 ];
 
+function AuthScreen({onAuthenticated}){
+ const [mode,setMode]=useState("login");
+ const [email,setEmail]=useState("");
+ const [password,setPassword]=useState("");
+ const [error,setError]=useState("");
+ const [loading,setLoading]=useState(false);
+
+ async function submit(e){
+  e.preventDefault();
+  setError("");
+  setLoading(true);
+  try{
+   const r=await fetch(`${API}/auth/${mode}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email,password})});
+   const data=await r.json();
+   if(!r.ok) throw new Error(data.error||"Something went wrong.");
+   localStorage.setItem("abuGplanToken",data.token);
+   onAuthenticated(data.token,data.email);
+  }catch(err){
+   setError(err.message);
+  }finally{
+   setLoading(false);
+  }
+ }
+
+ return <div className="authScreen">
+  <div className="authCard">
+   <img src="/logo.png" className="authLogo"/>
+   <h1>Abu Gplan AI Copilot</h1>
+   <p className="authSub">{mode==="login"?"Log in to continue":"Create your account"}</p>
+   <form onSubmit={submit}>
+    <input type="email" placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} required/>
+    <input type="password" placeholder="Password" value={password} onChange={e=>setPassword(e.target.value)} required minLength={6}/>
+    {error&&<div className="authError">{error}</div>}
+    <button type="submit" disabled={loading}>{loading?"Please wait...":(mode==="login"?"Log in":"Sign up")}</button>
+   </form>
+   <button type="button" className="authSwitch" onClick={()=>{setMode(mode==="login"?"signup":"login");setError("")}}>
+    {mode==="login"?"Don't have an account? Sign up":"Already have an account? Log in"}
+   </button>
+  </div>
+ </div>
+}
+
 export default function App(){
+ const [authToken,setAuthToken]=useState(null);
+ const [authEmail,setAuthEmail]=useState("");
+ const [authChecked,setAuthChecked]=useState(false);
+
  const [messages,setMessages]=useState([]),[input,setInput]=useState(""),[conversationId,setConversationId]=useState(null),[history,setHistory]=useState([]),[loading,setLoading]=useState(false),[sidebar,setSidebar]=useState(false);
  const [listening,setListening]=useState(false);
  const [attachments,setAttachments]=useState([]);
@@ -17,8 +63,33 @@ export default function App(){
  const recognitionRef=useRef(null);
  const fileInputRef=useRef(null);
 
- async function loadHistory(){try{const r=await fetch(`${API}/conversations`);if(r.ok)setHistory(await r.json())}catch{}}
- useEffect(()=>{loadHistory()},[]);
+ useEffect(()=>{
+  const stored=localStorage.getItem("abuGplanToken");
+  if(!stored){setAuthChecked(true);return}
+  fetch(`${API}/auth/me`,{headers:{Authorization:`Bearer ${stored}`}})
+   .then(r=>{if(!r.ok) throw new Error(); return r.json()})
+   .then(data=>{setAuthToken(stored);setAuthEmail(data.email)})
+   .catch(()=>{localStorage.removeItem("abuGplanToken")})
+   .finally(()=>setAuthChecked(true));
+ },[]);
+
+ function handleAuthenticated(token,email){
+  setAuthToken(token);
+  setAuthEmail(email);
+ }
+ function handleLogout(){
+  localStorage.removeItem("abuGplanToken");
+  setAuthToken(null);
+  setAuthEmail("");
+  setMessages([]);setConversationId(null);setHistory([]);setSidebar(false);
+ }
+ function authHeaders(){return authToken?{Authorization:`Bearer ${authToken}`}:{}}
+
+ async function loadHistory(){
+  if(!authToken) return;
+  try{const r=await fetch(`${API}/conversations`,{headers:authHeaders()});if(r.ok)setHistory(await r.json())}catch{}
+ }
+ useEffect(()=>{if(authToken) loadHistory()},[authToken]);
 
  function toggleMic(){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -57,7 +128,7 @@ export default function App(){
  }
 
  function newChat(){setConversationId(null);setMessages([]);setInput("");setSidebar(false);setAttachments([])}
- async function openChat(id){try{const r=await fetch(`${API}/conversations/${id}`);if(!r.ok)return;const c=await r.json();setConversationId(id);setMessages(c.messages||[]);setSidebar(false)}catch{} }
+ async function openChat(id){try{const r=await fetch(`${API}/conversations/${id}`,{headers:authHeaders()});if(!r.ok)return;const c=await r.json();setConversationId(id);setMessages(c.messages||[]);setSidebar(false)}catch{} }
 
  async function sendMessage(e){
   e?.preventDefault();
@@ -74,7 +145,7 @@ export default function App(){
    form.append("model",model);
    if(conversationId) form.append("conversationId",conversationId);
    attachedNow.forEach(a=>form.append("files",a.file));
-   const r=await fetch(`${API}/chat`,{method:"POST",body:form});
+   const r=await fetch(`${API}/chat`,{method:"POST",headers:authHeaders(),body:form});
    const data=await r.json();
    if(!r.ok) throw new Error(data.error||"Request failed");
    setConversationId(data.conversationId);
@@ -87,16 +158,28 @@ export default function App(){
   }
  }
 
- async function deleteChat(id){await fetch(`${API}/conversations/${id}`,{method:"DELETE"});if(id===conversationId)newChat();loadHistory()}
+ async function deleteChat(id){await fetch(`${API}/conversations/${id}`,{method:"DELETE",headers:authHeaders()});if(id===conversationId)newChat();loadHistory()}
  const examples=[{icon:<Code2/>,text:"Build a professional website for my business"},{icon:<Lightbulb/>,text:"Help me solve a difficult problem"},{icon:<FileText/>,text:"Write a professional business proposal"},{icon:<Brain/>,text:"Explain a difficult topic step by step"}];
  const currentModelLabel=MODELS.find(m=>m.id===model)?.label||"Fast";
+
+ if(!authChecked){
+  return <div className="authScreen"><div className="authLoading">Loading...</div></div>;
+ }
+ if(!authToken){
+  return <AuthScreen onAuthenticated={handleAuthenticated}/>;
+ }
 
  return <div className="app">
   <aside className={`sidebar ${sidebar?"open":""}`}>
    <div className="brand"><img src="/logo.png"/><div><strong>Abu Gplan</strong><span>AI Copilot</span></div><button className="close" onClick={()=>setSidebar(false)}><X/></button></div>
    <button className="newChat" onClick={newChat}><Plus size={19}/> New conversation</button>
    <div className="label">Recent conversations</div><div className="history">{history.map(c=><div className="row" key={c.id}><button className="item" onClick={()=>openChat(c.id)}>{c.title}</button><button className="delete" onClick={()=>deleteChat(c.id)}><Trash2 size={15}/></button></div>)}</div>
-   <div className="bottom"><b>Abu Gplan AI Copilot</b><small>General-purpose AI workspace</small></div>
+   <div className="bottom">
+    <div className="accountRow">
+     <div><b>{authEmail}</b><small>Signed in</small></div>
+     <button className="logoutBtn" onClick={handleLogout} title="Log out"><LogOut size={16}/></button>
+    </div>
+   </div>
   </aside>
   <main className="main">
    <header><button className="menu" onClick={()=>setSidebar(true)}><Menu/></button><div className="title"><Sparkles size={18}/> Abu Gplan AI Copilot</div><div className="online"><i/> Online</div></header>
