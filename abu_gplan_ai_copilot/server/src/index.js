@@ -5,6 +5,9 @@ import crypto from "crypto";
 import multer from "multer";
 import { createRequire } from "module";
 import mammoth from "mammoth";
+import { MongoClient } from "mongodb";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
 
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
@@ -18,19 +21,99 @@ app.use(express.json({limit:"2mb"}));
 
 const upload = multer({storage: multer.memoryStorage(), limits:{fileSize:10*1024*1024, files:5}});
 
+/* ---------- MongoDB (user accounts) ---------- */
+const mongoClient = new MongoClient(process.env.MONGODB_URI);
+let usersCollection;
+async function connectDB(){
+  await mongoClient.connect();
+  const db = mongoClient.db();
+  usersCollection = db.collection("users");
+  await usersCollection.createIndex({email:1},{unique:true});
+  console.log("Connected to MongoDB");
+}
+connectDB().catch(err=>console.error("MongoDB connection error:", err.message));
+
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me_in_render_env_vars";
+
+function signToken(user){
+  return jwt.sign({sub:user._id.toString(), email:user.email}, JWT_SECRET, {expiresIn:"30d"});
+}
+
+function authMiddleware(req,res,next){
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if(!token) return res.status(401).json({error:"Please log in to continue."});
+  try{
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = {id:payload.sub, email:payload.email};
+    next();
+  }catch(e){
+    return res.status(401).json({error:"Your session has expired. Please log in again."});
+  }
+}
+
+/* ---------- Auth routes ---------- */
+app.post("/api/auth/signup", async(req,res)=>{
+  try{
+    const email=String(req.body?.email||"").trim().toLowerCase();
+    const password=String(req.body?.password||"");
+    if(!email||!email.includes("@")) return res.status(400).json({error:"A valid email is required."});
+    if(password.length<6) return res.status(400).json({error:"Password must be at least 6 characters."});
+    if(!usersCollection) return res.status(503).json({error:"Database is not ready yet. Try again in a moment."});
+    const existing = await usersCollection.findOne({email});
+    if(existing) return res.status(409).json({error:"An account with this email already exists."});
+    const passwordHash = await bcrypt.hash(password,10);
+    const result = await usersCollection.insertOne({email,passwordHash,createdAt:new Date()});
+    const token = signToken({_id:result.insertedId, email});
+    res.status(201).json({token,email});
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:"Signup failed. Please try again."});
+  }
+});
+
+app.post("/api/auth/login", async(req,res)=>{
+  try{
+    const email=String(req.body?.email||"").trim().toLowerCase();
+    const password=String(req.body?.password||"");
+    if(!usersCollection) return res.status(503).json({error:"Database is not ready yet. Try again in a moment."});
+    const user = await usersCollection.findOne({email});
+    if(!user) return res.status(401).json({error:"Incorrect email or password."});
+    const ok = await bcrypt.compare(password, user.passwordHash);
+    if(!ok) return res.status(401).json({error:"Incorrect email or password."});
+    const token = signToken(user);
+    res.json({token,email:user.email});
+  }catch(e){
+    console.error(e);
+    res.status(500).json({error:"Login failed. Please try again."});
+  }
+});
+
+app.get("/api/auth/me", authMiddleware, (req,res)=>{
+  res.json({email:req.user.email});
+});
+
 app.get("/api/health", (_req,res)=>res.json({ok:true,name:"Abu Gplan AI Copilot",time:new Date().toISOString()}));
-app.get("/api/conversations", (_req,res)=>res.json([...conversations.values()].map(({id,title,updatedAt})=>({id,title,updatedAt}))));
-app.get("/api/conversations/:id", (req,res)=>{
+
+/* ---------- Conversations (now user-scoped) ---------- */
+app.get("/api/conversations", authMiddleware, (req,res)=>{
+  res.json([...conversations.values()].filter(c=>c.userId===req.user.id).map(({id,title,updatedAt})=>({id,title,updatedAt})));
+});
+app.get("/api/conversations/:id", authMiddleware, (req,res)=>{
   const c=conversations.get(req.params.id);
-  if(!c) return res.status(404).json({error:"Conversation not found"});
+  if(!c || c.userId!==req.user.id) return res.status(404).json({error:"Conversation not found"});
   res.json(c);
 });
-app.post("/api/conversations", (req,res)=>{
+app.post("/api/conversations", authMiddleware, (req,res)=>{
   const id=crypto.randomUUID();
-  const c={id,title:String(req.body?.title||"New conversation").slice(0,100),updatedAt:Date.now(),messages:[]};
+  const c={id,userId:req.user.id,title:String(req.body?.title||"New conversation").slice(0,100),updatedAt:Date.now(),messages:[]};
   conversations.set(id,c); res.status(201).json(c);
 });
-app.delete("/api/conversations/:id", (req,res)=>{conversations.delete(req.params.id);res.status(204).end();});
+app.delete("/api/conversations/:id", authMiddleware, (req,res)=>{
+  const c=conversations.get(req.params.id);
+  if(c && c.userId===req.user.id) conversations.delete(req.params.id);
+  res.status(204).end();
+});
 
 async function extractFileContent(file){
   const {mimetype, originalname, buffer} = file;
@@ -71,15 +154,15 @@ async function callAI(messages, model){
   return data?.choices?.[0]?.message?.content || "No response was returned by the AI provider.";
 }
 
-app.post("/api/chat", upload.array("files", 5), async(req,res)=>{
+app.post("/api/chat", authMiddleware, upload.array("files", 5), async(req,res)=>{
   try{
     const message=String(req.body?.message||"").trim();
     const files=req.files||[];
     if(!message && files.length===0) return res.status(400).json({error:"Message is required."});
 
     let c=conversations.get(req.body?.conversationId);
-    if(!c){
-      c={id:req.body?.conversationId||crypto.randomUUID(),title:(message||files[0]?.originalname||"New conversation").slice(0,60),updatedAt:Date.now(),messages:[]};
+    if(!c || c.userId!==req.user.id){
+      c={id:req.body?.conversationId||crypto.randomUUID(),userId:req.user.id,title:(message||files[0]?.originalname||"New conversation").slice(0,60),updatedAt:Date.now(),messages:[]};
       conversations.set(c.id,c);
     }
 
